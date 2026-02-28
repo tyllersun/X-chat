@@ -86,7 +86,7 @@ def trigger_sidebar_close():
 CONFIG_FILE = 'auth_config.yaml'
 
 if not os.path.exists(CONFIG_FILE):
-    hashed_passwords = stauth.Hasher(['admin123']).generate()
+    hashed_passwords = stauth.Hasher.hash_passwords(['admin123'])
     default_config = {
         'credentials': {
             'usernames': {
