@@ -1,0 +1,7 @@
+auth_config.yaml
+.env
+.streamlit/secrets.toml
+venv/
+__pycache__/
+*.pyc
+.DS_Store
