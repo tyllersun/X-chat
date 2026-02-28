@@ -85,29 +85,7 @@ def trigger_sidebar_close():
 # ============================================================
 CONFIG_FILE = 'auth_config.yaml'
 
-if not os.path.exists(CONFIG_FILE):
-    hashed_passwords = stauth.Hasher.hash_passwords(['admin123'])
-    default_config = {
-        'credentials': {
-            'usernames': {
-                'admin': {
-                    'email': 'admin@example.com',
-                    'failed_login_attempts': 0,
-                    'logged_in': False,
-                    'name': 'Admin',
-                    'password': hashed_passwords[0]
-                }
-            }
-        },
-        'cookie': {
-            'expiry_days': 30,
-            'key': 'some_signature_key',
-            'name': 'xchat_cookie'
-        }
-    }
-    with open(CONFIG_FILE, 'w') as file:
-        yaml.dump(default_config, file, default_flow_style=False)
-
+# Priority 1: Read from st.secrets (Streamlit Cloud deployment)
 if "credentials" in st.secrets:
     config = dict(st.secrets)
     if "credentials" in config:
@@ -118,9 +96,37 @@ if "credentials" in st.secrets:
             }
     if "cookie" in config:
         config["cookie"] = dict(config["cookie"])
-else:
+
+# Priority 2: Read from auth_config.yaml (local development)
+elif os.path.exists(CONFIG_FILE):
     with open(CONFIG_FILE) as file:
         config = yaml.load(file, Loader=SafeLoader)
+
+# Priority 3: Auto-generate default config file (first-time local setup only)
+else:
+    import bcrypt
+    salt = bcrypt.gensalt()
+    hashed_pwd = bcrypt.hashpw('admin123'.encode('utf8'), salt).decode('utf8')
+    config = {
+        'credentials': {
+            'usernames': {
+                'admin': {
+                    'email': 'admin@example.com',
+                    'failed_login_attempts': 0,
+                    'logged_in': False,
+                    'name': 'Admin',
+                    'password': hashed_pwd
+                }
+            }
+        },
+        'cookie': {
+            'expiry_days': 30,
+            'key': 'some_signature_key',
+            'name': 'xchat_cookie'
+        }
+    }
+    with open(CONFIG_FILE, 'w') as file:
+        yaml.dump(config, file, default_flow_style=False)
 
 authenticator = stauth.Authenticate(
     config['credentials'],
