@@ -5,6 +5,7 @@ import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
 import time
+import os
 
 # Import Mock APIs
 from mock_api import (
