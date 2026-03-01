@@ -2,9 +2,45 @@
 
 ## 1. 應用程式架構設計
 
-前端應用程式 (`app.py`) 是使用 **Streamlit** 建構的，並且設計為雙模式介面，結合了傳統的商業智慧 (BI) 功能與互動式 AI 聊天機器人。
+前端應用程式 (`app.py`) 是使用 **Streamlit** 建構的，並且設計為雙模式介面，結合了傳統的商業智慧 (BI) 功能與互動式 AI 聊天機器人。後端 API 預計使用 **FastAPI** 開發，打包成 Docker 容器並部署於 **GCP Cloud Run** 上，且所有 API 皆需進行權限驗證 (Auth)。
 
-### 1.1 核心元件
+### 1.1 系統高階架構圖
+
+```mermaid
+flowchart TB
+    subgraph Frontend ["Frontend (部署於 Streamlit Cloud)"]
+        UI["Streamlit UI<br/>• 處理基本 UI 渲染<br/>• 利用 Config 產生圖表<br/>• 呼叫後端 API"]
+    end
+
+    subgraph Backend ["Backend (部署於 GCP Cloud Run / FastAPI + Docker)"]
+        direction TB
+        
+        subgraph APIs ["核心 APIs (皆須 Auth)"]
+            DataAPI["Data API<br/>• 處理資料更新問題<br/>• 快取減少資料抽取和計算次數"]
+            ChartAPI["Chart API (LLM Tool)<br/>• 產生 Config 圖表與 AI Insight"]
+            RAGAPI["RAG API (LLM Tool)<br/>• 回傳 Reference Chunk 與 Link"]
+            LLMAPI["LLM API (Gemini API)<br/>• 附帶 Guardrail 防止不相關問題"]
+            LogAPI["LOG API<br/>• 緩存並批次寫入 User 使用記錄與頻率"]
+            FeedbackAPI["Feedback API<br/>• 儲存 User Feedback"]
+        end
+    end
+    
+    UI -->|"HTTP Request (提問/聊天)"| LLMAPI
+    UI -->|"HTTP Request (Dashboard 畫圖與資料)"| ChartAPI
+    UI -->|"User Feedback"| FeedbackAPI
+    
+    LLMAPI -.->|"Tool Call"| ChartAPI
+    LLMAPI -.->|"Tool Call"| RAGAPI
+    
+    ChartAPI -->|"取得實際資料"| DataAPI
+    
+    DataAPI -.->|"呼叫紀錄"| LogAPI
+    ChartAPI -.->|"呼叫紀錄"| LogAPI
+    RAGAPI -.->|"呼叫紀錄"| LogAPI
+    LLMAPI -.->|"呼叫紀錄"| LogAPI
+```
+
+### 1.2 核心元件
 * **雙模式系統**：
   * **一般模式 (Dashboard)**：傳統的選單驅動視圖，包含「儀表板 (Dashboard)」、「系統介紹 (Introduction)」與「專案時程 (Schedule)」。顯示預先定義的 KPI 指標、圖表與交易紀錄。
   * **AI 助理模式 (AI Mode)**：由 LLM 驅動的對話介面，允許使用者以自然語言提問，並接收包含多種格式的區塊式回應（純文字、Plotly 圖表、地圖、數據指標）。
@@ -55,19 +91,19 @@
   **資料獲取 & 圖表生成流程圖 (Flowchart)：**
   ```mermaid
   flowchart TD
-      A[LLM 代理人請求資料: POST /v1/data/fetch] --> B{有命中快取 (Cache Hit)?}
-      B -- 是 --> C{原始資料有更新嗎?}
-      B -- 否 --> D[從資料庫撈取原始資料]
+      A["LLM 代理人請求資料: POST /v1/data/fetch"] --> B{"有命中快取 (Cache Hit)?"}
+      B -- 是 --> C{"原始資料有更新嗎?"}
+      B -- 否 --> D["從資料庫撈取原始資料"]
       C -- 是 --> D
-      C -- 否 --> E[回傳快取中已處理好之資料]
-      D --> F[套用過濾過濾 (Filters)、分組 (GroupBy)、聚合 (Aggr)]
-      F --> G[更新快取]
+      C -- 否 --> E["回傳快取中已處理好之資料"]
+      D --> F["套用過濾 (Filters)、分組 (GroupBy)、聚合 (Aggr)"]
+      F --> G["更新快取"]
       G --> E
       
-      E --> H[LLM 決定圖表類型與配置細節]
-      H --> I[LLM 請求畫圖: POST /v1/charts/generate]
-      I --> J[產生 AI 洞察文字]
-      J --> K[回傳 Plotly JSON 規格]
+      E --> H["LLM 決定圖表類型與配置細節"]
+      H --> I["LLM 請求畫圖: POST /v1/charts/generate"]
+      I --> J["產生 AI 洞察文字"]
+      J --> K["回傳 Plotly JSON 規格"]
   ```
 
 * **交易紀錄分頁表 (Transactions Log)**
@@ -81,14 +117,14 @@
 **AI 聊天模式輪詢流程圖 (Polling Flowchart)：**
 ```mermaid
 flowchart TD
-    A[使用者送出問題] --> B[POST /v1/chat/submit]
-    B --> C[收到任務 ID (request_id)]
-    C --> D[GET /v1/chat/status/request_id]
-    D --> E{擷取狀態 == complete?}
-    E -- 否 --> F[將目前進度更新至前端 UI 狀態列，並等待]
+    A["使用者送出問題"] --> B["POST /v1/chat/submit"]
+    B --> C["收到任務 ID (request_id)"]
+    C --> D["GET /v1/chat/status/request_id"]
+    D --> E{"擷取狀態 == complete?"}
+    E -- 否 --> F["將目前進度更新至前端 UI 狀態列，並等待"]
     F --> D
-    E -- 是 --> G[GET /v1/chat/result/request_id]
-    G --> H[渲染推理軌跡 (Trace) 與區塊 (Blocks) UI]
+    E -- 是 --> G["GET /v1/chat/result/request_id"]
+    G --> H["渲染推理軌跡 (Trace) 與區塊 (Blocks) UI"]
 ```
 
 * **1. 提交聊天請求 (Submit Chat Request)**

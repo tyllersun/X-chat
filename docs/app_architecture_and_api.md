@@ -2,9 +2,45 @@
 
 ## 1. App Architecture Design
 
-The frontend application (`app.py`) is built using **Streamlit** and is designed to operate in a dual-mode interface, combining traditional Business Intelligence (BI) capabilities with an interactive AI Chatbot.
+The frontend application (`app.py`) is built using **Streamlit** and is designed to operate in a dual-mode interface, combining traditional Business Intelligence (BI) capabilities with an interactive AI Chatbot. The backend API is expected to be developed using **FastAPI**, packaged into a Docker container, and deployed on **GCP Cloud Run**, with authentication (Auth) required for all APIs.
 
-### 1.1 Core Components
+### 1.1 System High-Level Architecture
+
+```mermaid
+flowchart TB
+    subgraph Frontend ["Frontend (Streamlit Cloud)"]
+        UI["Streamlit UI<br/>• Renders basic UI<br/>• Generates charts from config<br/>• Calls Backend APIs"]
+    end
+
+    subgraph Backend ["Backend (GCP Cloud Run / FastAPI + Docker)"]
+        direction TB
+        
+        subgraph APIs ["Core APIs (Auth Required)"]
+            DataAPI["Data API<br/>• Handles data updates<br/>• Caching to reduce extraction & compute"]
+            ChartAPI["Chart API (LLM Tool)<br/>• Generates Chart Configs & AI Insights"]
+            RAGAPI["RAG API (LLM Tool)<br/>• Returns reference chunks & links"]
+            LLMAPI["LLM API (Gemini API)<br/>• Guardrail to prevent irrelevant questions"]
+            LogAPI["LOG API<br/>• Caches & batch inserts user usage/logs"]
+            FeedbackAPI["Feedback API<br/>• Stores user feedback"]
+        end
+    end
+    
+    UI -->|"HTTP Request (Chat/Prompt)"| LLMAPI
+    UI -->|"HTTP Request (Dashboard Charts & Data)"| ChartAPI
+    UI -->|"Submit Feedback"| FeedbackAPI
+    
+    LLMAPI -.->|"Tool Call"| ChartAPI
+    LLMAPI -.->|"Tool Call"| RAGAPI
+    
+    ChartAPI -->|"Fetches Data"| DataAPI
+    
+    DataAPI -.->|"Triggers log"| LogAPI
+    ChartAPI -.->|"Triggers log"| LogAPI
+    RAGAPI -.->|"Triggers log"| LogAPI
+    LLMAPI -.->|"Triggers log"| LogAPI
+```
+
+### 1.2 Core Components
 * **Dual-Mode System**:
   * **Normal Mode (Dashboard)**: Traditional menu-driven views including "Dashboard", "Introduction", and "Schedule". Displays predefined KPI metrics, charts, and transaction logs.
   * **AI Assistant Mode**: A conversational interface powered by an LLM that allows users to ask natural language questions and receive multi-modal block responses (text, Plotly charts, maps, metrics).
@@ -55,19 +91,19 @@ The dashboard requires endpoints to fetch real-time metrics and historical data,
   **Data Fetch & Chart Generation Flowchart:**
   ```mermaid
   flowchart TD
-      A[LLM Agent requests data: POST /v1/data/fetch] --> B{Cache Hit?}
-      B -- Yes --> C{Has Raw Data Updated?}
-      B -- No --> D[Fetch Raw Data from DB]
+      A["LLM Agent requests data: POST /v1/data/fetch"] --> B{"Cache Hit?"}
+      B -- Yes --> C{"Has Raw Data Updated?"}
+      B -- No --> D["Fetch Raw Data from DB"]
       C -- Yes --> D
-      C -- No --> E[Return Cached Processed Data]
-      D --> F[Apply Filters, GroupBy, Aggregations]
-      F --> G[Update Cache]
+      C -- No --> E["Return Cached Processed Data"]
+      D --> F["Apply Filters, GroupBy, Aggregations"]
+      F --> G["Update Cache"]
       G --> E
       
-      E --> H[LLM decides chart type and configuration]
-      H --> I[LLM requests chart: POST /v1/charts/generate]
-      I --> J[Generate AI Insight]
-      J --> K[Return Plotly JSON Spec]
+      E --> H["LLM decides chart type and configuration"]
+      H --> I["LLM requests chart: POST /v1/charts/generate"]
+      I --> J["Generate AI Insight"]
+      J --> K["Return Plotly JSON Spec"]
   ```
 
 * **Transactions Log** (Data Table)
@@ -81,14 +117,14 @@ The chat interface utilizes a real asynchronous request/polling cycle, compliant
 **AI Chat Mode Polling Flowchart:**
 ```mermaid
 flowchart TD
-    A[User Submits Prompt] --> B[POST /v1/chat/submit]
-    B --> C[Receive request_id]
-    C --> D[GET /v1/chat/status/request_id]
-    D --> E{Status == complete?}
-    E -- No --> F[Update UI Status & Wait]
+    A["User Submits Prompt"] --> B["POST /v1/chat/submit"]
+    B --> C["Receive request_id"]
+    C --> D["GET /v1/chat/status/request_id"]
+    D --> E{"Status == complete?"}
+    E -- No --> F["Update UI Status & Wait"]
     F --> D
-    E -- Yes --> G[GET /v1/chat/result/request_id]
-    G --> H[Render Trace & Blocks UI]
+    E -- Yes --> G["GET /v1/chat/result/request_id"]
+    G --> H["Render Trace & Blocks UI"]
 ```
 
 * **1. Submit Chat Request**
