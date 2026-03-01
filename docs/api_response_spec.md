@@ -147,6 +147,28 @@ A row of KPI metric cards.
 
 ---
 
+### `reference`
+A block displaying source citations for Retrieval-Augmented Generation (RAG).
+
+```json
+{
+  "type": "reference",
+  "sources": [
+    { "title": "2025 Annual Report", "url": "https://example.com/doc/1", "snippet": "Revenue grew by 15%..." },
+    { "title": "Internal Wiki: Sales Strategy", "url": "https://wiki.example.com/sales", "snippet": "Focus on Product B..." }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sources` | array | ✅ | Array of source objects |
+| `sources[].title` | string | ✅ | Name of the document/source |
+| `sources[].url` | string | ❌ | Optional link to the source material |
+| `sources[].snippet` | string | ❌ | Brief excerpt highlighting why it was relevant |
+
+---
+
 ## Trace Events
 
 The `trace` array documents what happened internally (LLM calls, tool calls, sub-agents).
