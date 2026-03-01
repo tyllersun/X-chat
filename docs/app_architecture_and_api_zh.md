@@ -114,6 +114,11 @@ flowchart TB
 ### 2.2 AI 聊天模式 (Chat Mode) API
 聊天介面使用了真實的非同步請求與輪詢 (Polling) 機制，並相容於 `api_response_spec.md`。
 
+> [!WARNING]
+> **多執行個體部署注意 (Cloud Run)**：
+> 因為 GCP Cloud Run 是無狀態 (Stateless) 且會自動擴展多台機器的環境，當前端進行輪詢 (`GET /v1/chat/status/{request_id}`) 時，每次 Request 可能會打到**不同的容器實例**。
+> 因此，後端**絕對不能**只把任務狀態存在單一機器的記憶體中。必須引入**分散式快取 (Distributed Cache)**（例如：GCP Memorystore for Redis），讓所有 Cloud Run 實例都能共享並查詢同一個 `request_id` 的最新進度與結果。
+
 **AI 聊天模式輪詢流程圖 (Polling Flowchart)：**
 ```mermaid
 flowchart TD

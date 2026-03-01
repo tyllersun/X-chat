@@ -114,6 +114,11 @@ The dashboard requires endpoints to fetch real-time metrics and historical data,
 ### 2.2 AI Chat Mode APIs
 The chat interface utilizes a real asynchronous request/polling cycle, compliant with `api_response_spec.md`.
 
+> [!WARNING]
+> **Multi-Instance Deployment (Cloud Run)**:
+> GCP Cloud Run is a stateless, auto-scaling environment. When the frontend polls `GET /v1/chat/status/{request_id}`, consecutive requests may hit **different container instances**.
+> Therefore, the backend **must not** store task progress solely in in-memory dictionaries. You must introduce a **Distributed Cache** (e.g., GCP Memorystore for Redis) so all Cloud Run instances can share and query the latest status and result of the same `request_id`.
+
 **AI Chat Mode Polling Flowchart:**
 ```mermaid
 flowchart TD
