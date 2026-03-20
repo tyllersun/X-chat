@@ -7,6 +7,19 @@ from yaml.loader import SafeLoader
 import time
 import os
 
+import requests
+# ============================================================
+# API Config
+# Priority: st.secrets (Streamlit Cloud) → hardcoded fallback (local dev)
+# ============================================================
+LLM_API_URL = st.secrets.get("LLM_API_URL", "https://xchat-llm-api-574222557748.asia-east1.run.app")
+XCHAT_HISTORY_API = st.secrets.get("XCHAT_HISTORY_API", "http://localhost:8003")  # History API
+API_KEY = st.secrets.get("API_KEY", "please use api key")
+HEADERS = {
+    "Content-Type": "application/json",
+    "x-api-key": API_KEY
+}
+
 # Import Mock APIs
 from mock_api import (
     submit_chat_request, poll_chat_status, get_chat_result, db, 
@@ -163,18 +176,64 @@ if st.session_state["authentication_status"]:
         authenticator.logout('Logout', 'sidebar')
 
     # ----------------------------------------------------------
-    # Session State Initialization
+    # History Helper Functions
     # ----------------------------------------------------------
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = {
+    import json
+    LOCAL_HISTORY_DIR = "local_history"
+    os.makedirs(LOCAL_HISTORY_DIR, exist_ok=True)
+
+    def load_chat_history(user_id):
+        try:
+            # Try to get from API (sync)
+            resp = requests.get(f"{XCHAT_HISTORY_API}/v1/history/{user_id}", headers=HEADERS, timeout=1.5)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["chat_history"], data["current_chat"]
+        except Exception:
+            pass
+        
+        file_path = os.path.join(LOCAL_HISTORY_DIR, f"{user_id}.json")
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data["chat_history"], data.get("current_chat", "New Chat 1")
+                
+        return {
             "New Chat 1": [],
             "Product Analysis (Example)": [
                 {"role": "user", "content": "I'd like to see the retention rate for Product C"},
                 {"role": "assistant", "content": "Here is the retention analysis for Product C last month:\n- Week 1: 45%\n- Week 4: 20%"}
             ]
+        }, "New Chat 1"
+
+    def save_chat_history():
+        user_id = st.session_state.get("username", "admin")
+        payload = {
+            "current_chat": st.session_state.current_chat, 
+            "chat_history": st.session_state.chat_history
         }
-    if "current_chat" not in st.session_state:
-        st.session_state.current_chat = "New Chat 1"
+        
+        file_path = os.path.join(LOCAL_HISTORY_DIR, f"{user_id}.json")
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+        # Try background sync
+        try:
+            requests.post(f"{XCHAT_HISTORY_API}/v1/history/{user_id}", json=payload, headers=HEADERS, timeout=1.5)
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------
+    # Session State Initialization
+    # ----------------------------------------------------------
+    if "chat_history" not in st.session_state or "current_chat" not in st.session_state:
+        current_user = st.session_state.get("username", "admin")
+        loaded_history, loaded_current = load_chat_history(current_user)
+        st.session_state.chat_history = loaded_history
+        st.session_state.current_chat = loaded_current
 
     if "normal_view" not in st.session_state:
         st.session_state.normal_view = "Dashboard"
@@ -187,11 +246,23 @@ if st.session_state["authentication_status"]:
         st.title("X-chat Data Platform")
     with col_toggle:
         st.write("") 
-        is_ai_mode = st.toggle(
-            "🤖 AI Assistant Mode", 
-            value=False, 
-            help="Turn ON for AI chat, turn OFF for traditional dashboard"
-        )
+        
+        # We put the toggles in a nested layout for better alignment
+        t_col1, t_col2 = st.columns(2)
+        with t_col1:
+            is_ai_mode = st.toggle(
+                "🤖 AI Mode", 
+                value=False, 
+                help="Turn ON for AI chat, turn OFF for dashboard"
+            )
+        with t_col2:
+            use_real_llm = st.toggle(
+                "🚀 Real LLM",
+                value=False,
+                help="Turn ON to connect to Cloud Run LLM API",
+                disabled=not is_ai_mode,
+                key="use_real_llm"
+            )
 
     st.markdown("---")
 
@@ -322,18 +393,35 @@ if st.session_state["authentication_status"]:
         # Collapsible reasoning trace (shown above the response if available)
         if trace:
             with st.expander("🔍 View reasoning trace", expanded=False):
-                for step in trace:
+                # Build a CSS-styled vertical pipeline
+                # We use a single string without indentation to avoid Streamlit/Markdown code block interpretation
+                pipeline_html = "<div style='margin-left: 15px; border-left: 2px solid #4B5563; padding-left: 20px; padding-top: 10px; font-family: ui-sans-serif, system-ui, -apple-system, blinkmacsystemfont, \"Segoe UI\", roboto, \"Helvetica Neue\", arial, sans-serif;'>"
+                for idx, step in enumerate(trace):
                     icon = {
                         "llm_call":  "🧠",
                         "tool_call": "🔧",
                         "sub_agent": "🤖",
                         "query":     "🗄️",
                     }.get(step.get("type", ""), "•")
+                    
                     dur = step.get("duration_ms")
-                    dur_str = f" — `{dur} ms`" if dur else ""
-                    st.markdown(f"{icon} **{step['label']}**{dur_str}")
-                    if step.get("detail"):
-                        st.caption(step["detail"])
+                    dur_str = f"<span style='color: #9CA3AF; font-size: 0.85em; margin-left: 8px;'>{dur}ms</span>" if dur else ""
+                    
+                    detail = step.get("detail", "")
+                    detail_html = f"<div style='color: #9CA3AF; font-size: 0.85em; margin-top: 4px; line-height: 1.4;'>{detail}</div>" if detail else ""
+                    
+                    # Highlight the labels to look more premium
+                    label_color = "#E5E7EB"
+                    if step.get("type") == "tool_call":
+                        label_color = "#60A5FA" # Blue-ish for tools
+                    
+                    # Connection node (circle with icon)
+                    node_style = "position: absolute; left: -32px; top: -2px; width: 24px; height: 24px; background: #1F2937; border: 1px solid #4B5563; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.9em; z-index: 10;"
+                    
+                    pipeline_html += f"<div style='position: relative; margin-bottom: 25px;'><span style='{node_style}'>{icon}</span><div style='font-weight: 600; color: {label_color}; display: flex; align-items: center;'>{step['label']} {dur_str}</div>{detail_html}</div>"
+                
+                pipeline_html += "</div>"
+                st.markdown(pipeline_html, unsafe_allow_html=True)
 
         for block in blocks:
             btype = block.get("type")
@@ -403,27 +491,86 @@ if st.session_state["authentication_status"]:
         """
         Simulate an LLM response utilizing the asynchronous polling pattern mapping
         to the real world implementation of the api.
+        Or call the real Cloud Run LLM API if 'use_real_llm' is true.
         """
-        # 1. Submit request to get a Task ID
-        request_id = submit_chat_request(prompt, chat_id, user_id)
+        use_real = st.session_state.get("use_real_llm", False)
         
-        # 2. Poll the status endpoint until complete
-        while True:
-            status_res = poll_chat_status(request_id)
-            if status_res["status"] == "complete":
-                break
-            # Yield the status message for the Streamlit UI to display
-            yield status_res["message"]
-            time.sleep(0.5) # Poll interval
+        if use_real:
+            # --- REAL LLM API PATH ---
+            # Format history to match ChatMessage model (only 'role' and 'content')
+            formatted_history = []
+            for msg in st.session_state.chat_history.get(chat_id, [])[:-1]:
+                content = msg.get("content", "")
+                if not content and "blocks" in msg:
+                    # If this is an assistant message with blocks, extract text
+                    content = "\n".join(b["content"] for b in msg["blocks"] if b.get("type") == "text")
+                formatted_history.append({"role": msg["role"], "content": content})
+                
+            payload = {
+                "prompt": prompt,
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "history": formatted_history,
+                # Pass login info so personalization_tool can use it
+                "user_info": {
+                    "username": st.session_state.get("username"),
+                    "name": st.session_state.get("name"),
+                    "email": st.session_state.get("email"),
+                }
+            }
+            try:
+                # 1. Submit request
+                resp = requests.post(f"{LLM_API_URL}/v1/chat/submit", json=payload, headers=HEADERS, timeout=10)
+                resp.raise_for_status()
+                request_id = resp.json()["request_id"]
+                
+                # 2. Poll the status
+                while True:
+                    status_resp = requests.get(f"{LLM_API_URL}/v1/chat/status/{request_id}", headers=HEADERS, timeout=10)
+                    status_resp.raise_for_status()
+                    status_data = status_resp.json()
+                    
+                    if status_data["status"] == "complete":
+                        break
+                    elif status_data["status"] == "failed":
+                        yield {"blocks": [{"type": "text", "content": f"❌ API Error: {status_data.get('message', 'Unknown error')} "}], "trace": []}
+                        return
+                        
+                    yield status_data["message"]
+                    time.sleep(1.0)
+                    
+                # 3. Get result
+                res_resp = requests.get(f"{LLM_API_URL}/v1/chat/result/{request_id}", headers=HEADERS, timeout=15)
+                res_resp.raise_for_status()
+                yield res_resp.json()
+                
+            except Exception as e:
+                yield {"blocks": [{"type": "text", "content": f"❌ Error connecting to Real LLM API: {str(e)}"}], "trace": []}
+                
+        else:
+            # --- MOCK API PATH ---
+            # 1. Submit request to get a Task ID
+            request_id = submit_chat_request(prompt, chat_id, user_id)
             
-        # 3. Task is complete, fetch the final result JSON
-        final_result = get_chat_result(request_id)
-        
-        # Yield a sentinel dict at the end with the final result
-        yield final_result
+            # 2. Poll the status endpoint until complete
+            while True:
+                status_res = poll_chat_status(request_id)
+                if status_res["status"] == "complete":
+                    break
+                # Yield the status message for the Streamlit UI to display
+                yield status_res["message"]
+                time.sleep(0.5) # Poll interval
+                
+            # 3. Task is complete, fetch the final result JSON
+            final_result = get_chat_result(request_id)
+            
+            # Yield a sentinel dict at the end with the final result
+            yield final_result
 
     def handle_user_input(prompt, current_title):
         """Process user input, show live status while LLM works, then render block response."""
+        is_first_message = len(st.session_state.chat_history[current_title]) == 0 and current_title.startswith("New Chat")
+        
         st.session_state.chat_history[current_title].append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
@@ -434,7 +581,8 @@ if st.session_state["authentication_status"]:
                 for item in _simulate_llm_response(prompt, current_title, user_id):
                     if isinstance(item, str):
                         # Progress step message
-                        st.write(item)
+                        # Update the status label directly instead of appending with st.write
+                        status.update(label=f"🤖 {item}")
                     else:
                         # Final result dict
                         result = item
@@ -449,6 +597,27 @@ if st.session_state["authentication_status"]:
             "blocks": result["blocks"],
             "trace":  result.get("trace"),
         })
+
+        if is_first_message:
+            # Generate new title from prompt (e.g. first 15 chars)
+            new_title = prompt[:15] + "..." if len(prompt) > 15 else prompt
+            # Handle duplicates
+            base_new_title = new_title
+            counter = 1
+            while new_title in st.session_state.chat_history and new_title != current_title:
+                new_title = f"{base_new_title} ({counter})"
+                counter += 1
+                
+            new_history = {}
+            for k, v in st.session_state.chat_history.items():
+                if k == current_title:
+                    new_history[new_title] = v
+                else:
+                    new_history[k] = v
+            st.session_state.chat_history = new_history
+            st.session_state.current_chat = new_title
+
+        save_chat_history()
 
     @st.dialog("💬 Send Feedback")
     def feedback_dialog(mode_key: str):
@@ -497,6 +666,7 @@ if st.session_state["authentication_status"]:
                 new_title = f"New Chat {len(st.session_state.chat_history) + 1}"
                 st.session_state.chat_history[new_title] = []
                 st.session_state.current_chat = new_title
+                save_chat_history()
                 st.session_state['close_sidebar_flag'] = True
                 st.rerun()    
             st.markdown("---")
@@ -504,6 +674,7 @@ if st.session_state["authentication_status"]:
                 btn_type = "primary" if chat_title == st.session_state.current_chat else "secondary"
                 if st.button(f"💬 {chat_title}", key=f"btn_{chat_title}", use_container_width=True, type=btn_type):
                     st.session_state.current_chat = chat_title
+                    save_chat_history()
                     st.session_state['close_sidebar_flag'] = True
                     st.rerun()
 
