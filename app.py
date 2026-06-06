@@ -6,6 +6,7 @@ import yaml
 from yaml.loader import SafeLoader
 import time
 import os
+from urllib.parse import quote
 
 import requests
 # ============================================================
@@ -181,17 +182,24 @@ if st.session_state["authentication_status"]:
     LOCAL_HISTORY_DIR = "local_history"
     os.makedirs(LOCAL_HISTORY_DIR, exist_ok=True)
 
+    def get_current_user_id():
+        return st.session_state.get("username") or "admin"
+
+    def history_user_key(user_id):
+        return quote(str(user_id), safe="")
+
     def load_chat_history(user_id):
+        user_key = history_user_key(user_id)
         try:
             # Try to get from API (sync)
-            resp = requests.get(f"{XCHAT_HISTORY_API}/v1/history/{user_id}", headers=HEADERS, timeout=1.5)
+            resp = requests.get(f"{XCHAT_HISTORY_API}/v1/history/{user_key}", headers=HEADERS, timeout=1.5)
             if resp.status_code == 200:
                 data = resp.json()
                 return data["chat_history"], data["current_chat"]
         except Exception:
             pass
         
-        file_path = os.path.join(LOCAL_HISTORY_DIR, f"{user_id}.json")
+        file_path = os.path.join(LOCAL_HISTORY_DIR, f"{user_key}.json")
         if os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -206,13 +214,19 @@ if st.session_state["authentication_status"]:
         }, "New Chat 1"
 
     def save_chat_history():
-        user_id = st.session_state.get("username", "admin")
+        user_id = get_current_user_id()
+        if st.session_state.get("history_user_id") != user_id:
+            # The browser session can survive logout/login. Never persist a
+            # previous user's in-memory history under the newly logged-in user.
+            return
+
+        user_key = history_user_key(user_id)
         payload = {
             "current_chat": st.session_state.current_chat, 
             "chat_history": st.session_state.chat_history
         }
         
-        file_path = os.path.join(LOCAL_HISTORY_DIR, f"{user_id}.json")
+        file_path = os.path.join(LOCAL_HISTORY_DIR, f"{user_key}.json")
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
@@ -221,18 +235,24 @@ if st.session_state["authentication_status"]:
 
         # Try background sync
         try:
-            requests.post(f"{XCHAT_HISTORY_API}/v1/history/{user_id}", json=payload, headers=HEADERS, timeout=1.5)
+            requests.post(f"{XCHAT_HISTORY_API}/v1/history/{user_key}", json=payload, headers=HEADERS, timeout=1.5)
         except Exception:
             pass
 
     # ----------------------------------------------------------
     # Session State Initialization
     # ----------------------------------------------------------
-    if "chat_history" not in st.session_state or "current_chat" not in st.session_state:
-        current_user = st.session_state.get("username", "admin")
+    current_user = get_current_user_id()
+    if (
+        "chat_history" not in st.session_state
+        or "current_chat" not in st.session_state
+        or st.session_state.get("history_user_id") != current_user
+    ):
         loaded_history, loaded_current = load_chat_history(current_user)
         st.session_state.chat_history = loaded_history
         st.session_state.current_chat = loaded_current
+        st.session_state.history_user_id = current_user
+        st.session_state.pop("chat_input_override", None)
 
     if "normal_view" not in st.session_state:
         st.session_state.normal_view = "Dashboard"
