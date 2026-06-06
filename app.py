@@ -20,10 +20,9 @@ HEADERS = {
     "x-api-key": API_KEY
 }
 
-# Import Mock APIs
+# Import dashboard data helpers
 from mock_api import (
-    submit_chat_request, poll_chat_status, get_chat_result, db, 
-    fetch_data, generate_universal_chart, generate_chart_insight
+    db, fetch_data, generate_universal_chart, generate_chart_insight
 )
 
 # ============================================================
@@ -247,22 +246,11 @@ if st.session_state["authentication_status"]:
     with col_toggle:
         st.write("") 
         
-        # We put the toggles in a nested layout for better alignment
-        t_col1, t_col2 = st.columns(2)
-        with t_col1:
-            is_ai_mode = st.toggle(
-                "🤖 AI Mode", 
-                value=False, 
-                help="Turn ON for AI chat, turn OFF for dashboard"
-            )
-        with t_col2:
-            use_real_llm = st.toggle(
-                "🚀 Real LLM",
-                value=False,
-                help="Turn ON to connect to Cloud Run LLM API",
-                disabled=not is_ai_mode,
-                key="use_real_llm"
-            )
+        is_ai_mode = st.toggle(
+            "🤖 AI Mode",
+            value=False,
+            help="Turn ON for AI chat, turn OFF for dashboard"
+        )
 
     st.markdown("---")
 
@@ -487,85 +475,59 @@ if st.session_state["authentication_status"]:
                         if snippet:
                             st.caption(f"> {snippet}")
 
-    def _simulate_llm_response(prompt: str, chat_id: str, user_id: str):
+    def _call_llm_response(prompt: str, chat_id: str, user_id: str):
         """
-        Simulate an LLM response utilizing the asynchronous polling pattern mapping
-        to the real world implementation of the api.
-        Or call the real Cloud Run LLM API if 'use_real_llm' is true.
+        Call the real Cloud Run LLM API using the asynchronous polling pattern.
         """
-        use_real = st.session_state.get("use_real_llm", False)
-        
-        if use_real:
-            # --- REAL LLM API PATH ---
-            # Format history to match ChatMessage model (only 'role' and 'content')
-            formatted_history = []
-            for msg in st.session_state.chat_history.get(chat_id, [])[:-1]:
-                content = msg.get("content", "")
-                if not content and "blocks" in msg:
-                    # If this is an assistant message with blocks, extract text
-                    content = "\n".join(b["content"] for b in msg["blocks"] if b.get("type") == "text")
-                formatted_history.append({"role": msg["role"], "content": content})
-                
-            payload = {
-                "prompt": prompt,
-                "user_id": user_id,
-                "chat_id": chat_id,
-                "history": formatted_history,
-                # Pass login info so personalization_tool can use it
-                "user_info": {
-                    "username": st.session_state.get("username"),
-                    "name": st.session_state.get("name"),
-                    "email": st.session_state.get("email"),
-                }
+        # Format history to match ChatMessage model (only 'role' and 'content')
+        formatted_history = []
+        for msg in st.session_state.chat_history.get(chat_id, [])[:-1]:
+            content = msg.get("content", "")
+            if not content and "blocks" in msg:
+                # If this is an assistant message with blocks, extract text
+                content = "\n".join(b["content"] for b in msg["blocks"] if b.get("type") == "text")
+            formatted_history.append({"role": msg["role"], "content": content})
+
+        payload = {
+            "prompt": prompt,
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "history": formatted_history,
+            # Pass login info so personalization_tool can use it
+            "user_info": {
+                "username": st.session_state.get("username"),
+                "name": st.session_state.get("name"),
+                "email": st.session_state.get("email"),
             }
-            try:
-                # 1. Submit request
-                resp = requests.post(f"{LLM_API_URL}/v1/chat/submit", json=payload, headers=HEADERS, timeout=10)
-                resp.raise_for_status()
-                request_id = resp.json()["request_id"]
-                
-                # 2. Poll the status
-                while True:
-                    status_resp = requests.get(f"{LLM_API_URL}/v1/chat/status/{request_id}", headers=HEADERS, timeout=10)
-                    status_resp.raise_for_status()
-                    status_data = status_resp.json()
-                    
-                    if status_data["status"] == "complete":
-                        break
-                    elif status_data["status"] == "failed":
-                        yield {"blocks": [{"type": "text", "content": f"❌ API Error: {status_data.get('message', 'Unknown error')} "}], "trace": []}
-                        return
-                        
-                    yield status_data["message"]
-                    time.sleep(1.0)
-                    
-                # 3. Get result
-                res_resp = requests.get(f"{LLM_API_URL}/v1/chat/result/{request_id}", headers=HEADERS, timeout=15)
-                res_resp.raise_for_status()
-                yield res_resp.json()
-                
-            except Exception as e:
-                yield {"blocks": [{"type": "text", "content": f"❌ Error connecting to Real LLM API: {str(e)}"}], "trace": []}
-                
-        else:
-            # --- MOCK API PATH ---
-            # 1. Submit request to get a Task ID
-            request_id = submit_chat_request(prompt, chat_id, user_id)
-            
-            # 2. Poll the status endpoint until complete
+        }
+        try:
+            # 1. Submit request
+            resp = requests.post(f"{LLM_API_URL}/v1/chat/submit", json=payload, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            request_id = resp.json()["request_id"]
+
+            # 2. Poll the status
             while True:
-                status_res = poll_chat_status(request_id)
-                if status_res["status"] == "complete":
+                status_resp = requests.get(f"{LLM_API_URL}/v1/chat/status/{request_id}", headers=HEADERS, timeout=10)
+                status_resp.raise_for_status()
+                status_data = status_resp.json()
+
+                if status_data["status"] == "complete":
                     break
-                # Yield the status message for the Streamlit UI to display
-                yield status_res["message"]
-                time.sleep(0.5) # Poll interval
-                
-            # 3. Task is complete, fetch the final result JSON
-            final_result = get_chat_result(request_id)
-            
-            # Yield a sentinel dict at the end with the final result
-            yield final_result
+                elif status_data["status"] == "failed":
+                    yield {"blocks": [{"type": "text", "content": f"❌ API Error: {status_data.get('message', 'Unknown error')} "}], "trace": []}
+                    return
+
+                yield status_data["message"]
+                time.sleep(1.0)
+
+            # 3. Get result
+            res_resp = requests.get(f"{LLM_API_URL}/v1/chat/result/{request_id}", headers=HEADERS, timeout=15)
+            res_resp.raise_for_status()
+            yield res_resp.json()
+
+        except Exception as e:
+            yield {"blocks": [{"type": "text", "content": f"❌ Error connecting to Real LLM API: {str(e)}"}], "trace": []}
 
     def handle_user_input(prompt, current_title):
         """Process user input, show live status while LLM works, then render block response."""
@@ -578,7 +540,7 @@ if st.session_state["authentication_status"]:
             with st.status("🤖 Submitting request to AI...", expanded=True) as status:
                 result = None
                 user_id = st.session_state.get("username", "admin")
-                for item in _simulate_llm_response(prompt, current_title, user_id):
+                for item in _call_llm_response(prompt, current_title, user_id):
                     if isinstance(item, str):
                         # Progress step message
                         # Update the status label directly instead of appending with st.write
@@ -700,27 +662,36 @@ if st.session_state["authentication_status"]:
                 st.write("")
                 st.write("")
                 st.write("")
-                st.markdown("<h2 style='text-align: center; color: #888;'>How can I help you today?</h2>", unsafe_allow_html=True)
+                st.markdown("""
+                <div style="text-align: center; color: #888;">
+                    <h2>您好，管理員！我是 XChange 活動的 AI 助理。今天有什麼我可以協助您的嗎？</h2>
+                    <p>我可以為您提供以下協助：</p>
+                    <ul style="display: inline-block; text-align: left; line-height: 1.8;">
+                        <li>活動當日時程表（如：各時段環節、講者、休息時間等）</li>
+                        <li>組員及教室查詢（如：查詢您或其他人的分組與教室位置）</li>
+                        <li>贊助商與合作項目（如：贊助商名單、專屬優惠等）</li>
+                        <li>Xchange 內部組別資訊（如：各組負責任務、聯絡方式等）</li>
+                    </ul>
+                    <p>請隨時告訴我您想了解什麼！</p>
+                </div>
+                """, unsafe_allow_html=True)
                 st.write("")
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     # Use standard buttons without deprecation warning use_container_width
-                    if st.button("📊 Show this week's product trends"):
-                        st.session_state['chat_input_override'] = "Show this week's product trends"
+                    if st.button("📅 活動當日時程表"):
+                        st.session_state['chat_input_override'] = "請提供活動當日時程表"
                         st.rerun()
-                    if st.button("👥 Analyze user activity"):
-                        st.session_state['chat_input_override'] = "Analyze user activity"
-                        st.rerun()
-                    if st.button("📄 Ask about remote work policy"):
-                        st.session_state['chat_input_override'] = "What is the remote work policy?"
+                    if st.button("👥 組員及教室查詢"):
+                        st.session_state['chat_input_override'] = "我想查詢組員及教室資訊"
                         st.rerun()
                 with col2:
-                    if st.button("🗺️ Show user geographic distribution map"):
-                        st.session_state['chat_input_override'] = "Show user geographic distribution map"
+                    if st.button("🤝 贊助商與合作項目"):
+                        st.session_state['chat_input_override'] = "請介紹贊助商與合作項目"
                         st.rerun()
-                    if st.button("💰 Predict next month's revenue"):
-                        st.session_state['chat_input_override'] = "Predict next month's revenue"
+                    if st.button("🏢 Xchange 內部組別資訊"):
+                        st.session_state['chat_input_override'] = "請提供 Xchange 內部組別資訊"
                         st.rerun()
         else:
             # Forcefully clear the welcome placeholder if there are messages
@@ -741,7 +712,7 @@ if st.session_state["authentication_status"]:
             handle_user_input(prompt, current_title)
             st.rerun()
             
-        elif prompt := st.chat_input("Ask a question (e.g., 'show product trends' or 'user distribution map')"):
+        elif prompt := st.chat_input("請輸入您想了解的活動資訊"):
             handle_user_input(prompt, current_title)
             st.rerun()
 
